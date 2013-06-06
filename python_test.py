@@ -6,6 +6,8 @@ import time
 import string
 import datetime
 import argparse
+from os import environ
+from sys import maxint
 
 def ListTweets(bucket):
     """Dump all keys in the bucket to stdout"""
@@ -45,23 +47,32 @@ def DeleteTweets(bucket):
             obj = bucket.get(key)
             obj.delete()
             
-def LoadTweets(bucket, quantity, term):   
-    api = twitter.Api()
+def LoadTweets(protocol, bucket, quantity, term):
+    twitter_consumer_key = environ["TWITTER_CONSUMER_KEY"]
+    twitter_consumer_secret = environ["TWITTER_CONSUMER_SECRET"]
+    twitter_access_token = environ["TWITTER_ACCESS_TOKEN"]
+    twitter_access_token_secret = environ["TWITTER_ACCESS_TOKEN_SECRET"]
+    api = twitter.Api(consumer_key=twitter_consumer_key,consumer_secret=twitter_consumer_secret, access_token_key=twitter_access_token, access_token_secret=twitter_access_token_secret)
     
     pages = (quantity+1)/100
     count = 0
+    earliest_id = maxint
     for pagenum in range(pages+1):
-        #api.GetSearch("DoctorWho", geocode, since_id, max_id, until, per_page, page, lang, show_user, result_type, include_entities, query_users)
+        #api.GetSearch("DoctorWho", geocode, since_id, earliest_id, until, per_page, page, lang, show_user, result_type, include_entities, query_users)
         perpage = quantity - pagenum * 100
-        results = api.GetSearch(term, per_page=perpage, page=pagenum+1)
+        results = api.GetSearch(term, count=perpage, max_id=earliest_id)
         
         # Make sure search is enabled before storing results
-        bucket.enable_search()
+        if protocol != "pbc":
+            bucket.enable_search()
         bucket.allow_mult = True
         for status in results:
-            # Tue, 26 Feb 2013 00:06:36 +0000
+            if status.id < earliest_id:
+                earliest_id = status.id
+            # API 1.1 Format: Wed Jun 05 13:02:12 +0000 2013
             # Nuke the timezone cuz datetime.strptime() has some issues
-            timestamp = time.strptime(status.created_at[:-6], '%a, %d %b %Y %H:%M:%S')
+            timestring = status.created_at[:-10] + status.created_at[-4:]
+            timestamp = time.strptime(timestring, '%a %b %d %H:%M:%S %Y')
             dt = datetime.datetime(timestamp.tm_year, timestamp.tm_mon, timestamp.tm_mday, timestamp.tm_hour, timestamp.tm_min, timestamp.tm_sec)
             parent = status.in_reply_to_status_id
             count = count + 1
@@ -85,13 +96,14 @@ def SearchTweets(client, bucket, term):
     # is the query we want to perform.
     print 'tweet:{0}'.format(term)
     search_query = client.solr.search(bucket.name, 'tweet:{0}'.format(term))
-    num_found = search_query['num_found']
-    if num_found > 0:
-        count = 0
-        for item in search_query['docs']:
-            count = count + 1
-            print "%d = %s - %s at %s" % (count, item['id'], item['user'], item['time'])
-            print item['tweet']
+    if search_query != None:
+        num_found = search_query['num_found']
+        if num_found > 0:
+            count = 0
+            for item in search_query['docs']:
+                count = count + 1
+                print "%d = %s - %s at %s" % (count, item['id'], item['user'], item['time'])
+                print item['tweet']
 
 def Search2iTweets(bucket, term):
     decoder = bucket.get_decoder("application/json")
@@ -134,7 +146,10 @@ print args
 # Connect to Riak.
 options={}
 options['timeout'] = 10
-client = riak.RiakClient(host=args.host, protocol=args.protocol, http_port=args.http, pb_port=args.pbc, transport_options = options)
+if args.protocol == 'pbc':
+    client = riak.RiakClient(host=args.host, protocol=args.protocol, pb_port=args.pbc, transport_options = options)
+else:
+    client = riak.RiakClient(host=args.host, protocol=args.protocol, http_port=args.http, transport_options = options)
 
 # Choose the bucket to store data in.
 bucket = client.bucket('twitter')
@@ -151,8 +166,7 @@ elif args.mapreduce != None:
     MapReduceTweets(client, bucket, args.mapreduce)
 elif args.load != None:
     print ("Loading %d tweets having term '%s'" % (args.load, args.query))
-    LoadTweets(bucket, args.load, args.query)
+    LoadTweets(args.protocol, bucket, args.load, args.query)
 elif args.search != None:
     print "Searching for term '%s' in loaded tweets" % args.search
     SearchTweets(client, bucket, args.search)
-    
