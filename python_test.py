@@ -15,6 +15,9 @@ def ListTweets(bucket):
     allkeys = bucket.get_keys()
     bucket.allow_mult = True
     count = 0
+    if allkeys == None:
+        print "No Tweets."
+        return
     for key in allkeys:
         count = count + 1
         obj = bucket.get(key)
@@ -63,8 +66,8 @@ def LoadTweets(protocol, bucket, quantity, term):
         results = api.GetSearch(term, count=perpage, max_id=earliest_id)
         
         # Make sure search is enabled before storing results
-        if protocol != "pbc":
-            bucket.enable_search()
+#        if protocol != "pbc":
+#            bucket.enable_search()
         bucket.allow_mult = True
         for status in results:
             if status.id < earliest_id:
