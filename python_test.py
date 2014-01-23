@@ -66,8 +66,7 @@ def LoadTweets(protocol, bucket, quantity, term):
         results = api.GetSearch(term, count=perpage, max_id=earliest_id)
         
         # Make sure search is enabled before storing results
-#        if protocol != "pbc":
-#            bucket.enable_search()
+        bucket.enable_search()
         bucket.allow_mult = True
         for status in results:
             if status.id < earliest_id:
@@ -98,7 +97,7 @@ def SearchTweets(client, bucket, term):
     # First parameter is the bucket we want to search within, the second
     # is the query we want to perform.
     print 'tweet:{0}'.format(term)
-    search_query = client.solr.search(bucket.name, 'tweet:{0}'.format(term))
+    search_query = client.fulltext_search(bucket.name, 'tweet:{0}'.format(term))
     if search_query != None:
         num_found = search_query['num_found']
         if num_found > 0:
@@ -149,10 +148,10 @@ print args
 # Connect to Riak.
 options={}
 options['timeout'] = 10
-if args.protocol == 'pbc':
-    client = riak.RiakClient(host=args.host, protocol=args.protocol, pb_port=args.pbc, transport_options = options)
-else:
+if args.protocol != 'pbc':
     client = riak.RiakClient(host=args.host, protocol=args.protocol, http_port=args.http, transport_options = options)
+else:
+    client = riak.RiakClient(host=args.host, protocol=args.protocol, pb_port=args.pbc, transport_options = options)
 
 # Choose the bucket to store data in.
 bucket = client.bucket('twitter')
