@@ -9,23 +9,28 @@ import argparse
 from os import environ
 from sys import maxint
 
-def ListTweets(bucket):
+def ListTweets(bucket, streaming=False):
     """Dump all keys in the bucket to stdout"""
     decoder = bucket.get_decoder("application/json")
-    allkeys = bucket.get_keys()
+    if streaming:
+        allkeys = bucket.stream_keys()
+        allkeys = [item for sublist in allkeys for item in sublist]
+    else:
+        allkeys = bucket.get_keys()
     bucket.allow_mult = True
     count = 0
     if allkeys == None:
         print "No Tweets."
         return
+    print "Total keys = {0}".format(len(allkeys))
     for key in allkeys:
         count = count + 1
         obj = bucket.get(key)
         for sibling in obj.siblings:
             json = sibling.encoded_data
-            dict = decoder(json)
-            print "[%d] - %s - %s at %s" % (count,key,dict['user'],dict['time'])
-            print dict['tweet'].encode("utf-8")
+            jsdict = decoder(json)
+            print "[%d] - %s - %s at %s" % (count,key,jsdict['user'],jsdict['time'])
+            print jsdict['tweet'].encode("utf-8")
             links = sibling.links
             for parent_link in links:
                 print "LINK"
@@ -34,9 +39,9 @@ def ListTweets(bucket):
                 for psibling in pobj.siblings:
                     pjson = psibling.encoded_data
                     if pjson != None:
-                        dict = decoder(pjson)
-                        print "\tPARENT - %s at %s" % (dict['user'],dict['time'])
-                        print "\t%s" % dict['tweet'].encode("utf-8")
+                        jsdict = decoder(pjson)
+                        print "\tPARENT - %s at %s" % (jsdict['user'],jsdict['time'])
+                        print "\t%s" % jsdict['tweet'].encode("utf-8")
             
 
 def DeleteTweets(bucket):
@@ -83,7 +88,8 @@ def LoadTweets(protocol, bucket, quantity, term):
             tweet = bucket.new(str(status.id), data={                                        
                 'tweet': status.text.encode("utf-8"),
                 'user': status.user.screen_name,
-                'time': dt.isoformat()
+                'time': dt.isoformat() + 'Z'
+                # Add 'Z' for Solr Compatibility
             })
             tweet.add_index('user_bin',status.user.screen_name)
             if parent != None:
@@ -93,7 +99,7 @@ def LoadTweets(protocol, bucket, quantity, term):
                     tweet.add_link(parent_node) 
             tweet.store()
         
-def SearchTweets(client, bucket, term):
+def SearchOldTweets(client, bucket, term):
     # First parameter is the bucket we want to search within, the second
     # is the query we want to perform.
     print 'tweet:{0}'.format(term)
@@ -107,6 +113,26 @@ def SearchTweets(client, bucket, term):
                 print "%d = %s - %s at %s" % (count, item['id'], item['user'], item['time'])
                 print item['tweet']
 
+
+def SearchTweets(client, bucket, term):
+    # First parameter is the bucket we want to search within, the second
+    # is the query we want to perform against Riak 2.0 aka Yokozuna
+
+    # Format <key>:*<value>*
+    results = bucket.search(term)
+    count = 0
+    decoder = bucket.get_decoder("application/json")
+    for item in results['docs']:
+        count = count + 1
+        key = item['_yz_rk']
+        obj = bucket.get(key)
+        for sibling in obj.siblings:
+            json = sibling.encoded_data
+            jsdict = decoder(json)
+            print "[%d] - %s - %s at %s" % (count,key,jsdict['user'],jsdict['time'])
+            print jsdict['tweet'].encode("utf-8")
+
+
 def Search2iTweets(bucket, term):
     decoder = bucket.get_decoder("application/json")
     result = bucket.get_index('user_bin', term)
@@ -116,9 +142,9 @@ def Search2iTweets(bucket, term):
             count = count + 1
             obj = bucket.get(key)
             json = obj.get_encoded_data()
-            dict = decoder(json)
-            print "[%d] - %s at %s" % (count,dict['user'],dict['time'])
-            print dict['tweet']
+            jsdict = decoder(json)
+            print "[%d] - %s at %s" % (count,jsdict['user'],jsdict['time'])
+            print jsdict['tweet']
       
 def MapReduceTweets(client, bucket, term):
     query = client.add(bucket.name)
@@ -129,6 +155,19 @@ def MapReduceTweets(client, bucket, term):
         # Print the key (``v.key``) and the value for that key (``data``).
         print "%s - %s" % (result[0], result[1])
 
+def CreateSearchSchema(client, name):
+    xml_file = open(name + '.xml', 'r')
+    schema_data = xml_file.read()
+    client.create_search_schema(name, schema_data)
+    xml_file.close()
+    client.create_search_index(name, name)
+    time.sleep(5)
+
+    # Associate bucket with search index
+    bucket = client.bucket('twitter')
+    bucket.set_property('search_index', 'twitter')
+
+
 # MAIN
 parser = argparse.ArgumentParser(description='Brew us some fresh, hot Riak!')
 parser.add_argument('-p','--dump', help='Dump all tweets', action='store_true')
@@ -138,10 +177,11 @@ parser.add_argument('-s','--search', help='Search Term')
 parser.add_argument('--host', help='Hostname', default='localhost')
 parser.add_argument('-t','--http', type=int, help='HTTP port number', default=10018)
 parser.add_argument('-b','--pbc', type=int, help='Protocol Buffer port number', default=10017)
-parser.add_argument('--protocol', help='Name of transport protocol to use', default='http', choices=['http','https','pbc'])
+parser.add_argument('--protocol', help='Name of transport protocol to use', default='pbc', choices=['http','pbc'])
 parser.add_argument('-x','--delete', help='Delete all tweets', action='store_true')
 parser.add_argument('-2','--twoi', help='Query 2i')
 parser.add_argument('-mr','--mapreduce', help='Test MapReduce to look for a user''s tweets')
+parser.add_argument('-sch','--schema', help='Create a YZ search schema from XML file')
 args = parser.parse_args()
 print args
 
@@ -161,7 +201,7 @@ if args.delete:
     DeleteTweets(bucket)
 elif args.dump:
     print "Dumping all existing tweets in Riak"
-    ListTweets(bucket)
+    ListTweets(bucket, False)
 elif args.twoi != None:
     Search2iTweets(bucket, args.twoi)
 elif args.mapreduce != None:
@@ -172,3 +212,6 @@ elif args.load != None:
 elif args.search != None:
     print "Searching for term '%s' in loaded tweets" % args.search
     SearchTweets(client, bucket, args.search)
+elif args.schema != None:
+    print "Creating schema '%s'" % args.schema
+    CreateSearchSchema(client, args.schema)
